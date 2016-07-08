@@ -19,6 +19,8 @@ package ly.stealth.mesos.kafka
 
 import joptsimple.{BuiltinHelpFormatter, OptionException, OptionSet, OptionParser}
 import java.net.{HttpURLConnection, URLEncoder, URL}
+import org.apache.log4j.Logger
+
 import scala.io.Source
 import java.io._
 import java.util
@@ -32,15 +34,22 @@ object Cli {
   var api: String = null
   var out: PrintStream = System.out
   var err: PrintStream = System.err
+  val logger = Logger.getLogger(Cli.getClass)
 
   def main(args: Array[String]): Unit = {
-    try { exec(args) }
+    try {
+      exec(args)
+    }
     catch { case e: Error =>
+      logger.error(s"There was a bad error: $e")
       err.println("Error: " + e.getMessage)
       System.exit(1)
     }
+    finally {
+      logger.error("woah, being shut down hurts!")
+    }
   }
-  
+
   def exec(_args: Array[String]): Unit = {
     var args = _args
 

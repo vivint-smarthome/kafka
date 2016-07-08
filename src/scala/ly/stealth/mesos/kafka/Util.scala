@@ -17,11 +17,15 @@
 
 package ly.stealth.mesos.kafka
 
-import java.util
-import scala.collection.JavaConversions._
-import scala.util.parsing.json.JSON
 import java.io.{File, IOException}
 import java.net.{Inet4Address, InetAddress, NetworkInterface}
+import java.util
+
+import org.I0Itec.zkclient.exception.ZkMarshallingError
+import org.I0Itec.zkclient.serialize.ZkSerializer
+
+import scala.collection.JavaConversions._
+import scala.util.parsing.json.JSON
 
 object Util {
   Class.forName(kafka.utils.Json.getClass.getName) // init class
@@ -175,6 +179,21 @@ object Util {
       str
     } finally {
       raf.close()
+    }
+  }
+
+  // this is a copy of kafka.utils.ZkUtils.ZkStringSerializer. copied because it's marked private in 0.10.0.0
+  object KafkaZkStringSerializer extends ZkSerializer {
+
+    @throws(classOf[ZkMarshallingError])
+    def serialize(data : Object) : Array[Byte] = data.asInstanceOf[String].getBytes("UTF-8")
+
+    @throws(classOf[ZkMarshallingError])
+    def deserialize(bytes : Array[Byte]) : Object = {
+      if (bytes == null)
+        null
+      else
+        new String(bytes, "UTF-8")
     }
   }
 }
