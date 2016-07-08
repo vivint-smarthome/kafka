@@ -23,6 +23,7 @@ import java.util.Properties
 import kafka.api.LeaderAndIsr
 import kafka.common.TopicAndPartition
 import kafka.controller.LeaderIsrAndControllerEpoch
+import ly.stealth.mesos.kafka.Util.KafkaZkStringSerializer
 
 import scala.collection.JavaConversions._
 import scala.collection.{mutable, Seq, Map}
@@ -72,16 +73,17 @@ class Topics {
 
   def getPartitions(topics: util.List[String]): Map[String, Set[Topics.Partition]] = {
     val zkClient = newZkClient
+    val zkUtils = ZkUtils(zkClient, isZkSecurityEnabled = false)
 
     try {
       // returns topic name -> (partition -> brokers)
-      val assignments = ZkUtils.getPartitionAssignmentForTopics(zkClient, topics)
+      val assignments = zkUtils.getPartitionAssignmentForTopics(topics)
       val topicAndPartitions = assignments.flatMap {
         case (topic, partitions) => partitions.map {
           case (partition, _)  => TopicAndPartition(topic, partition)
         }
       }.toSet
-      val leaderAndisr = ZkUtils.getPartitionLeaderAndIsrForTopics(zkClient, topicAndPartitions)
+      val leaderAndisr =  zkUtils.getPartitionLeaderAndIsrForTopics(zkClient, topicAndPartitions)
 
       topicAndPartitions.map(tap => {
         val replicas = assignments(tap.topic).getOrElse(tap.partition, Seq())
