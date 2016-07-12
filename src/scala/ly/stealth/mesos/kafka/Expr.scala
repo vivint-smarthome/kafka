@@ -1,6 +1,8 @@
 package ly.stealth.mesos.kafka
 
 import java.util
+import ly.stealth.mesos.kafka.Util.KafkaZkStringSerializer
+
 import scala.collection.JavaConversions._
 import java.io.PrintStream
 import kafka.utils.{ZKStringSerializer, ZkUtils}
@@ -166,8 +168,9 @@ object Expr {
     val topics = new util.TreeSet[String]()
 
     val zkClient = newZkClient
-    var allTopics: util.List[String] = null
-    try { allTopics = ZkUtils.getAllTopics(zkClient) }
+    var allTopics: Seq[String] = null
+    val zkUtils = ZkUtils(zkClient, isZkSecurityEnabled = false)
+    try { allTopics = zkUtils.getAllTopics()}
     finally { zkClient.close() }
 
     for (part <- expr.split(",").map(_.trim).filter(!_.isEmpty)) {
@@ -189,5 +192,5 @@ object Expr {
     out.println("  t*        - topics starting with 't'")
   }
 
-  private def newZkClient: ZkClient = new ZkClient(Config.zk, 30000, 30000, ZKStringSerializer)
+  private def newZkClient: ZkClient = new ZkClient(Config.zk, 30000, 30000, KafkaZkStringSerializer)
 }

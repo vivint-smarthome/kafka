@@ -38,7 +38,6 @@ class RebalancerTest extends KafkaMesosTestCase {
 
     startZkServer()
     zkClient = zkServer.getZkClient
-    zkClient.setZkSerializer(ZKStringSerializer)
   }
 
   @After
@@ -64,7 +63,8 @@ class RebalancerTest extends KafkaMesosTestCase {
   @Test
   def start_in_progress {
     Scheduler.cluster.topics.addTopic("topic", Map(0 -> util.Arrays.asList(0), 1 -> util.Arrays.asList(0)))
-    ZkUtils.createPersistentPath(zkClient, ZkUtils.ReassignPartitionsPath, "")
+    val zkUtils = ZkUtils(zkClient, isZkSecurityEnabled = false)
+    zkUtils.createPersistentPath(ZkUtils.ReassignPartitionsPath, "")
 
     try { rebalancer.start(util.Arrays.asList("t1"), util.Arrays.asList("0", "1")); fail() }
     catch { case e: Rebalancer.Exception => assertTrue(e.getMessage, e.getMessage.contains("in progress")) }

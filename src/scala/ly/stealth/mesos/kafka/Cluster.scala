@@ -18,6 +18,8 @@
 package ly.stealth.mesos.kafka
 
 import java.util
+import ly.stealth.mesos.kafka.Util.KafkaZkStringSerializer
+
 import scala.util.parsing.json.{JSONArray, JSONObject}
 import scala.collection.JavaConversions._
 import scala.collection.mutable
@@ -135,7 +137,8 @@ object Cluster {
 
   class ZkStorage(val path: String) extends Storage {
     createChrootIfRequired()
-    val zkClient = new ZkClient(Config.zk, 30000, 30000, ZKStringSerializer)
+
+    def zkClient: ZkClient = new ZkClient(Config.zk, 30000, 30000, KafkaZkStringSerializer)
 
     private def createChrootIfRequired(): Unit = {
       val slashIdx: Int = Config.zk.indexOf('/')
@@ -144,7 +147,7 @@ object Cluster {
       val chroot = Config.zk.substring(slashIdx)
       val zkConnect = Config.zk.substring(0, slashIdx)
 
-      val client = new ZkClient(zkConnect, 30000, 30000, ZKStringSerializer)
+      val client = new ZkClient(zkConnect, 30000, 30000, KafkaZkStringSerializer)
       try { client.createPersistent(chroot, true) }
       finally { client.close() }
     }

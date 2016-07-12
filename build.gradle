@@ -11,8 +11,9 @@ version = new File('src/scala/ly/stealth/mesos/kafka/Scheduler.scala').readLines
 jar.archiveName = "kafka-mesos-${version}.jar"
 
 def mesosVersion = "0.28.0"
-def kafkaVersion="0.8.1.1"
-def kafkaScalaVersion="2.10"
+def kafkaVersion = "0.10.0.0"
+def kafkaScalaVersion = "2.11"
+def jettyVersion = "9.0.4.v20130625"
 
 repositories {
     mavenCentral()
@@ -32,9 +33,8 @@ sourceSets {
     }
 }
 
-def jettyVersion = "9.0.4.v20130625"
 dependencies {
-    compile "org.scala-lang:scala-library:2.10.6"
+    compile "org.scala-lang:scala-library:2.11.7"
     compile "org.apache.mesos:mesos:$mesosVersion"
     compile name: "util-mesos-0.1.0.0"
     compile "com.google.protobuf:protobuf-java:2.5.0"
@@ -49,7 +49,7 @@ dependencies {
     compile "javax.servlet:javax.servlet-api:3.0.1"
     testCompile 'junit:junit:4.12'
 
-    compile ("org.apache.kafka:kafka_$kafkaScalaVersion:$kafkaVersion") {
+    compile("org.apache.kafka:kafka_$kafkaScalaVersion:$kafkaVersion") {
         exclude group: "javax.jms"
         exclude group: "com.sun.jdmk"
         exclude group: "com.sun.jmx"
@@ -73,7 +73,7 @@ jar {
 }
 
 task wrapper(type: Wrapper) {
-    gradleVersion = '2.8'
+    gradleVersion = '2.14'
 }
 
 distributions.main {
@@ -94,6 +94,7 @@ distTar {
 }
 
 import de.undercouch.gradle.tasks.download.Download
+
 task downloadKafka(type: Download) {
     src "https://archive.apache.org/dist/kafka/${kafkaVersion}/kafka_${kafkaScalaVersion}-${kafkaVersion}.tgz"
     dest rootDir
