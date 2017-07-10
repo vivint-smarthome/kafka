@@ -1,5 +1,7 @@
-Kafka Mesos Framework
+Kafka Mesos Framework [![Build Status](https://travis-ci.org/mesos/kafka.svg?branch=master)](https://travis-ci.org/mesos/kafka)
 ======================
+
+**Join us on Slack at #kafka-mesos https://mesos-slackin.herokuapp.com/**
 
 For issues https://github.com/mesos/kafka/issues
 
@@ -32,6 +34,7 @@ For issues https://github.com/mesos/kafka/issues
 * [Cloning brokers](#cloning-brokers)
 * [Retrieving broker log](#retrieving-broker-log)
 * [Rebalancing brokers in the cluster](#rebalancing-topics)
+* [Realigning brokers in the cluster](#realigning-topics)
 * [Listing topics](#listing-topics)
 * [Adding topic](#adding-topic)
 * [Updating topic](#updating-topic)
@@ -52,8 +55,7 @@ Clone and build the project
 
     # git clone https://github.com/mesos/kafka
     # cd kafka
-    # ./gradlew jar
-    # wget https://archive.apache.org/dist/kafka/0.8.2.2/kafka_2.10-0.8.2.2.tgz
+    # ./gradlew jar downloadKafka
 
 Environment Configuration
 --------------------------
@@ -74,7 +76,7 @@ The scheduler is configured through the command line or `kafka-mesos.properties`
 The following options are available:
 ```
 # ./kafka-mesos.sh help scheduler
-Start scheduler 
+Start scheduler
 Usage: scheduler [options] [config.properties]
 
 Option               Description
@@ -117,6 +119,21 @@ api=http://master:7000
 
 Now if running scheduler via `./kafka-mesos.sh scheduler` (no options specified) the scheduler will read values for options
 from the above file. You could also specify alternative config file by using `config` argument of the scheduler.
+
+Another example of `kafka-mesos.properties`:
+```
+storage=zk:/kafka-mesos
+master=zk://master:2181/mesos
+zk=zookeep1:2181,zookeep2:2181,zookeep3:2181/KafkaCluster
+api=http://master:7000
+```
+
+The second example creates /KafkaCluster chroot in zookeeper quorum (consisting of zookeep1,zookeep2,zookeep3 servers). Cluster data (--storage) is saved in
+zookeeper quorum, /KafkaCluster/kafka-mesos. Example creating topics using tools that come with kafka  would be
+```
+kafka-topics.sh --zookeeper zookeep1:2181,zookeep2:2181,zookeep3:2181/KafkaCluster  --create --config min.insync.replicas=3 --config max.message.bytes=47185920 --config unclean.leader.election.enable=false --topic tw_spam --partitions 15 --replication-factor 3
+```
+
 
 Run the scheduler
 -----------------
@@ -307,7 +324,7 @@ current limit is 100Kb no matter how many lines being requested.
 
 High Availability Scheduler State
 -------------------------
-The scheduler supports storing the cluster state in Zookeeper. It currently shares a znode within the mesos ensemble. To turn this on in properties 
+The scheduler supports storing the cluster state in Zookeeper. It currently shares a znode within the mesos ensemble. To turn this on in properties
 
 ```
 clusterStorage=zk:/kafka-mesos
@@ -879,6 +896,26 @@ topic-expr examples:
   t*        - topics starting with 't'
 ```
 
+Deleting Topics
+--------------
+Note: needs to be supported and enabled in the broker configuration (i.e.: `delete.topic.enable=true`).
+```
+#./kafka-mesos.sh help topic delete
+Delete topics
+Usage: topic delete [<topic-expr>]
+
+Generic Options
+Option  Description
+------  -----------
+--api   Api url. Example: http://master:7000
+
+topic-expr examples:
+  t0        - topic t0
+  t0,t1     - topics t0, t1
+  *         - any topic
+  t*        - topics starting with 't'
+```
+
 Listing topic partition details
 -------------------------------
 ```
@@ -886,12 +923,12 @@ Listing topic partition details
  Picked up _JAVA_OPTIONS: -Djava.net.preferIPv4Stack=true
  List partitions
  Usage: topic partition [<topic>]
- 
+
  Generic Options
  Option  Description
  ------  -----------
  --api   Api url. Example: http://master:7000
- 
+
  topic-expr examples:
    t0        - topic t0
    t0,t1     - topics t0, t1
@@ -935,6 +972,44 @@ attribute filtering:
   0..4[rack=r1,dc=dc1] - any broker having rack=r1 and dc=dc1
 ```
 
+Realigning topics
+----------------------------------
+```
+#./kafka-mesos.sh help topic realign
+ Realign topics
+ Usage: topic realign <topic-expr>|status [options]
+
+ Option                       Description
+ ------                       -----------
+ --broker                     <broker-expr>. Default - *. See below.
+ --fixedStartIndex <Integer>  index into the broker set to start assigning partitions at.  Default - -1
+                                (random)
+ --replicas <Integer>         replicas count. Default - -1 (no change)
+ --timeout                    timeout (30s, 1m, 1h). 0s - no timeout
+
+ Generic Options
+ Option  Description
+ ------  -----------
+ --api   Api url. Example: http://master:7000
+
+ topic-expr examples:
+   t0        - topic t0
+   t0,t1     - topics t0, t1
+   *         - any topic
+   t*        - topics starting with 't'
+
+ broker-expr examples:
+   0      - broker 0
+   0,1    - brokers 0,1
+   0..2   - brokers 0,1,2
+   0,1..2 - brokers 0,1,2
+   *      - any broker
+ attribute filtering:
+   *[rack=r1]           - any broker having rack=r1
+   *[hostname=slave*]   - any broker on host with name starting with 'slave'
+   0..4[rack=r1,dc=dc1] - any broker having rack=r1 and dc=dc1
+```
+
 Using the REST API
 ========================
 
@@ -954,34 +1029,34 @@ Listing brokers
 Adding a broker
 
 ```
-# curl "http://localhost:7000/api/broker/add?broker=0&cpus=8&mem=43008"
+# curl -X POST "http://localhost:7000/api/broker/add?broker=0&cpus=8&mem=43008"
 {"brokers" : [{"id" : "0", "mem" : 43008, "cpus" : 8.0, "heap" : 128, "failover" : {"delay" : "10s", "maxDelay" : "60s"}, "active" : false}]}
 ```
 
 Starting a broker
 
 ```
-# curl "http://localhost:7000/api/broker/start?broker=0"
+# curl -X POST "http://localhost:7000/api/broker/start?broker=0"
 {"success" : true, "ids" : "0"}
 ```
 
 Stopping a broker
 
 ```
-# curl "http://localhost:7000/api/broker/stop?broker=0"
+# curl -X POST "http://localhost:7000/api/broker/stop?broker=0"
 {"success" : true, "ids" : "0"}
 ```
 
 Restarting a broker
 
 ```
-# curl "http://localhost:7000/api/broker/restart?broker=0"
+# curl -X POST "http://localhost:7000/api/broker/restart?broker=0"
 {"status" : "restarted", "brokers" : [{"task" : {"hostname" : "slave0", "state" : "running", "slaveId" : "fd935975-5db0-4732-bfa4-3063b534972d-S3", "executorId" : "broker-0-a8e0d084-b890-4482-800e-12e72ed7f9ed", "attributes" : {}, "id" : "broker-0-ff11db36-206a-4019-9cd2-6993376831eb", "endpoint" : "slave0:9092"}, "stickiness" : {"period" : "10m", "hostname" : "slave0"}, "bindAddress" : "slave0", "options" : "log.dirs=\/tmp\/kafka\/$id", "id" : "2", "port" : "9092", "constraints" : "hostname=like:slave0", "mem" : 1024, "cpus" : 0.5, "metrics" : {"underReplicatedPartitions" : 0, "offlinePartitionsCount" : 0, "activeControllerCount" : 0, "timestamp" : 1455557472857}, "heap" : 1024, "failover" : {"delay" : "1m", "maxDelay" : "14m"}, "active" : true}]}
 ```
 Removing a broker
 
 ```
-# curl "http://localhost:7000/api/broker/remove?broker=0"
+# curl -X POST "http://localhost:7000/api/broker/remove?broker=0"
 {"ids" : "0"}
 ```
 
@@ -993,13 +1068,13 @@ Listing topics
 
 Adding topic
 ```
-# curl "http://localhost:7000/api/topic/add?topic=t"
+# curl -X POST "http://localhost:7000/api/topic/add?topic=t"
 {"topic" : {"name" : "t", "partitions" : {"0" : "1"}, "options" : {}}}
 ```
 
 Updating topic
 ```
-# curl "http://localhost:7000/api/topic/update?topic=t&options=flush.ms%3D1000"
+# curl -X POST "http://localhost:7000/api/topic/update?topic=t&options=flush.ms%3D1000"
 {"topic" : {"name" : "t", "partitions" : {"0" : "0, 1"}, "options" : {"flush.ms" : "1000"}}}
 ```
 

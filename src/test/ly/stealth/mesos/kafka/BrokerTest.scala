@@ -17,67 +17,94 @@
 
 package ly.stealth.mesos.kafka
 
-import com.google.protobuf.Descriptors
-import org.apache.mesos.Protos.Resource.DiskInfo
-import org.apache.mesos.Protos.Resource.DiskInfo.{Persistence, Source}
-import org.apache.mesos.Protos.Resource.DiskInfo.Source.{Mount, Type}
+import org.apache.mesos.Protos.Resource.DiskInfo.Source
 import org.junit.{Before, Test}
 import org.junit.Assert._
 import ly.stealth.mesos.kafka.Util.BindAddress
-import net.elodina.mesos.util.{Period, Range, Constraint}
+import net.elodina.mesos.util.{Constraint, Period, Range}
 import net.elodina.mesos.util.Strings.parseMap
 import java.util.{Collections, Date}
 import scala.collection.JavaConversions._
-import ly.stealth.mesos.kafka.Broker.{Endpoint, Stickiness, State, Task, Failover}
+import ly.stealth.mesos.kafka.Broker._
 import java.util
-import org.apache.mesos.Protos.{Value, Volume, Resource, Offer}
+import ly.stealth.mesos.kafka.executor.LaunchConfig
+import ly.stealth.mesos.kafka.json.JsonUtil
+import ly.stealth.mesos.kafka.scheduler.mesos.OfferResult
+import org.apache.mesos.Protos.{Offer, Resource}
 
 class BrokerTest extends KafkaMesosTestCase {
+
   var broker: Broker = null
 
   @Before
   override def before {
     super.before
-    broker = new Broker("0")
+    broker = new Broker(0)
     broker.cpus = 0
     broker.mem = 0
   }
 
   @Test
   def options {
-    // $id substitution
-    broker.options = parseMap("a=$id,b=2")
-    assertEquals(parseMap("a=0,b=2"), broker.options())
+    {
+      // $id substitution
+      val li = LaunchConfig(0, Map("a" -> "$id", "b" -> "2"), false, Map(), null, Map())
+      assertEquals(Map("a" -> "0", "b" -> "2"), li.interpolatedOptions)
+    }
+    {
+      // defaults
+      val li = LaunchConfig(0, Map("a" -> "2"), false, Map(), null, Map("b" -> "1"))
+      assertEquals(Map("b" -> "1", "a" -> "2"), li.interpolatedOptions)
+    }
 
-    // defaults
-    broker.options = parseMap("a=2")
-    assertEquals(parseMap("a=2,b=1"), broker.options(parseMap("a=2,b=1")))
-
-    // bind-address
-    broker.options = parseMap("host.name=123")
-    assertEquals(parseMap("host.name=123"), broker.options())
-
-    broker.bindAddress = new BindAddress("127.0.0.1")
-    assertEquals(parseMap("host.name=127.0.0.1"), broker.options())
+    {
+      // bind-address
+      val li = LaunchConfig(0, Map("host.name" -> "123"), false, Map(), null, Map())
+      assertEquals(Map("host.name" -> "123"), li.interpolatedOptions)
+    }
+    {
+      val li = LaunchConfig(0, Map("host.name" -> "123"), false, Map(), new BindAddress("127.0.0.1"), Map())
+      assertEquals(Map("host.name" -> "127.0.0.1"), li.interpolatedOptions)
+    }
+    {
+      broker.bindAddress = new BindAddress("127.0.0.1")
+      val li = LaunchConfig(0, Map("listeners" -> "PLAINTEXT://:3002", "port" -> "3002"), false, Map(), new BindAddress("127.0.0.1"), Map())
+      assertEquals(Map("host.name" -> "127.0.0.1", "port" -> "3002", "listeners" -> "PLAINTEXT://127.0.0.1:3002"), li.interpolatedOptions)
+    }
   }
 
   @Test
   def matches {
     // cpus
     broker.cpus = 0.5
-    assertNull(broker.matches(offer("cpus:0.2; cpus(role):0.3; ports:1000")))
-    assertEquals("cpus < 0.5", broker.matches(offer("cpus:0.2; cpus(role):0.2")))
+    var theOffer = offer("cpus:0.2; cpus(role):0.3; ports:1000")
+    BrokerTest.assertAccept(broker.matches(theOffer))
+
+    theOffer = offer("cpus:0.2; cpus(role):0.2")
+    assertEquals(
+      OfferResult.neverMatch(theOffer, broker, "cpus < 0.5"),
+      broker.matches(theOffer))
     broker.cpus = 0
 
     // mem
     broker.mem = 100
-    assertNull(broker.matches(offer("mem:70; mem(role):30; ports:1000")))
-    assertEquals("mem < 100", broker.matches(offer("mem:70; mem(role):29")))
+    theOffer = offer("mem:70; mem(role):30; ports:1000")
+    BrokerTest.assertAccept(broker.matches(theOffer))
+
+    theOffer = offer("mem:70; mem(role):29")
+    assertEquals(
+      OfferResult.neverMatch(theOffer, broker, "mem < 100"),
+      broker.matches(theOffer))
     broker.mem = 0
 
     // port
-    assertNull(broker.matches(offer("ports:1000")))
-    assertEquals("no suitable port", broker.matches(offer("")))
+    theOffer = offer("ports:1000")
+    BrokerTest.assertAccept(broker.matches(theOffer))
+
+    theOffer = offer("")
+    assertEquals(
+      OfferResult.neverMatch(theOffer, broker, "no suitable port"),
+      broker.matches(theOffer))
   }
 
   @Test
@@ -85,31 +112,47 @@ class BrokerTest extends KafkaMesosTestCase {
     val now = new Date(0)
     val resources: String = "ports:0..10"
 
-    assertNull(broker.matches(offer("master", resources)))
-    assertNull(broker.matches(offer("slave", resources)))
+    BrokerTest.assertAccept(broker.matches(offer("master", resources)))
+    BrokerTest.assertAccept(broker.matches(offer("slave", resources)))
 
     // token
-    broker.constraints = parseMap("hostname=like:master").mapValues(new Constraint(_))
-    assertNull(broker.matches(offer("master", resources)))
-    assertEquals("hostname doesn't match like:master", broker.matches(offer("slave", resources)))
+    broker.constraints = parseMap("hostname=like:master").mapValues(new Constraint(_)).toMap
+    var theOffer = offer("master", resources)
+    BrokerTest.assertAccept(broker.matches(theOffer))
+
+    theOffer = offer("slave", resources)
+    assertEquals(
+      OfferResult.neverMatch(theOffer, broker, "hostname doesn't match like:master"),
+      broker.matches(theOffer))
 
     // like
-    broker.constraints = parseMap("hostname=like:master.*").mapValues(new Constraint(_))
-    assertNull(broker.matches(offer("master", resources)))
-    assertNull(broker.matches(offer("master-2", resources)))
-    assertEquals("hostname doesn't match like:master.*", broker.matches(offer("slave", resources)))
+    broker.constraints = parseMap("hostname=like:master.*").mapValues(new Constraint(_)).toMap
+    BrokerTest.assertAccept(broker.matches(offer("master", resources)))
+    BrokerTest.assertAccept(broker.matches(offer("master-2", resources)))
+    theOffer = offer("slave", resources)
+    assertEquals(
+      OfferResult.neverMatch(theOffer, broker, "hostname doesn't match like:master.*"),
+      broker.matches(theOffer))
 
     // unique
-    broker.constraints = parseMap("hostname=unique").mapValues(new Constraint(_))
-    assertNull(broker.matches(offer("master", resources)))
-    assertEquals("hostname doesn't match unique", broker.matches(offer("master", resources), now, _ => util.Arrays.asList("master")))
-    assertNull(broker.matches(offer("master", resources), now, _ => util.Arrays.asList("slave")))
+    broker.constraints = parseMap("hostname=unique").mapValues(new Constraint(_)).toMap
+    theOffer = offer("master", resources)
+    BrokerTest.assertAccept(broker.matches(theOffer))
+
+    theOffer = offer("master", resources)
+    assertEquals(
+      OfferResult.neverMatch(theOffer, broker, "hostname doesn't match unique"),
+      broker.matches(theOffer, now, _ => util.Arrays.asList("master")))
+    BrokerTest.assertAccept(broker.matches(offer("master", resources), now, _ => util.Arrays.asList("slave")))
 
     // groupBy
-    broker.constraints = parseMap("hostname=groupBy").mapValues(new Constraint(_))
-    assertNull(broker.matches(offer("master", resources)))
-    assertNull(broker.matches(offer("master", resources), now, _ => util.Arrays.asList("master")))
-    assertEquals("hostname doesn't match groupBy", broker.matches(offer("master", resources), now, _ => util.Arrays.asList("slave")))
+    broker.constraints = parseMap("hostname=groupBy").mapValues(new Constraint(_)).toMap
+    BrokerTest.assertAccept(broker.matches(offer("master", resources)))
+    BrokerTest.assertAccept(broker.matches(offer("master", resources), now, _ => util.Arrays.asList("master")))
+    theOffer = offer("master", resources)
+    assertEquals(
+      OfferResult.neverMatch(theOffer, broker, "hostname doesn't match groupBy"),
+      broker.matches(theOffer, now, _ => util.Arrays.asList("slave")))
   }
 
   @Test
@@ -118,14 +161,21 @@ class BrokerTest extends KafkaMesosTestCase {
     val host1 = "host1"
     val resources = "ports:0..10"
 
-    assertNull(broker.matches(offer(host0, resources), new Date(0)))
-    assertNull(broker.matches(offer(host1, resources), new Date(0)))
+
+    BrokerTest.assertAccept(broker.matches(offer(host0, resources), new Date(0)))
+    BrokerTest.assertAccept(broker.matches(offer(host1, resources), new Date(0)))
 
     broker.registerStart(host0)
     broker.registerStop(new Date(0))
 
-    assertNull(broker.matches(offer(host0, resources), new Date(0)))
-    assertEquals("hostname != stickiness host", broker.matches(offer(host1, resources), new Date(0)))
+
+    BrokerTest.assertAccept(broker.matches(offer(host0, resources), new Date(0)))
+    val theOffer = offer(host1, resources)
+    assertEquals(
+      OfferResult.eventuallyMatch(
+        theOffer, broker,
+        "hostname != stickiness host", broker.stickiness.period.ms().toInt / 1000),
+      broker.matches(theOffer, new Date(0)))
   }
 
   @Test
@@ -135,16 +185,22 @@ class BrokerTest extends KafkaMesosTestCase {
     def offer(attributes: String): Offer = this.offer("id", "fw-id", "slave-id", "host", "ports:0..10", attributes)
 
     // like
-    broker.constraints = parseMap("rack=like:1-.*").mapValues(new Constraint(_))
-    assertNull(broker.matches(offer("rack=1-1")))
-    assertNull(broker.matches(offer("rack=1-2")))
-    assertEquals("rack doesn't match like:1-.*", broker.matches(offer("rack=2-1")))
+    broker.constraints = parseMap("rack=like:1-.*").mapValues(new Constraint(_)).toMap
+    BrokerTest.assertAccept(broker.matches(offer("rack=1-1")))
+    BrokerTest.assertAccept(broker.matches(offer("rack=1-2")))
+    var theOffer = offer("rack=2-1")
+    assertEquals(
+      OfferResult.neverMatch(theOffer, broker, "rack doesn't match like:1-.*"),
+      broker.matches(theOffer))
 
     // groupBy
-    broker.constraints = parseMap("rack=groupBy").mapValues(new Constraint(_))
-    assertNull(broker.matches(offer("rack=1")))
-    assertNull(broker.matches(offer("rack=1"), now, _ => util.Arrays.asList("1")))
-    assertEquals("rack doesn't match groupBy", broker.matches(offer("rack=2"), now, _ => util.Arrays.asList("1")))
+    broker.constraints = parseMap("rack=groupBy").mapValues(new Constraint(_)).toMap
+    BrokerTest.assertAccept(broker.matches(offer("rack=1")))
+    BrokerTest.assertAccept(broker.matches(offer("rack=1"), now, _ => util.Arrays.asList("1")))
+    theOffer = offer("rack=2")
+    assertEquals(
+      OfferResult.neverMatch(theOffer, broker, "rack doesn't match groupBy"),
+      broker.matches(theOffer, now, _ => util.Arrays.asList("1")))
   }
 
   @Test
@@ -313,10 +369,9 @@ class BrokerTest extends KafkaMesosTestCase {
     broker.registerStop(now, failed = true)
     assertTrue(broker.failover.isWaitingDelay(now))
 
-    assertFalse(broker.shouldStart(host, now = now))
-    assertTrue(broker.shouldStart(host, now = new Date(now.getTime + broker.failover.delay.ms)))
+    assertFalse(broker.failover.isWaitingDelay(now = new Date(now.getTime + broker.failover.delay.ms)))
     broker.failover.resetFailures()
-    assertTrue(broker.shouldStart(host, now = now))
+    assertFalse(broker.failover.isWaitingDelay(now = now))
   }
 
   @Test
@@ -334,15 +389,16 @@ class BrokerTest extends KafkaMesosTestCase {
   def state {
     assertEquals("stopped", broker.state())
 
-    broker.task = new Task(_state = State.STOPPING)
+    broker.task = Task()
+    broker.task.state = State.STOPPING
     assertEquals("stopping", broker.state())
 
     broker.task = null
     broker.active = true
     assertEquals("starting", broker.state())
 
-    broker.task = new Task()
-    assertEquals("starting", broker.state())
+    broker.task = Task()
+    assertEquals("pending", broker.state())
 
     broker.task.state = State.RUNNING
     assertEquals("running", broker.state())
@@ -365,7 +421,10 @@ class BrokerTest extends KafkaMesosTestCase {
           setName(classOf[BrokerTest].getSimpleName + "-scheduleState")
           Thread.sleep(delay)
 
-          if (state != null) broker.task = new Task(_state = state)
+          if (state != null) {
+            broker.task = Task()
+            broker.task.state = state
+          }
           else broker.task = null
         }
       }.start()
@@ -392,16 +451,23 @@ class BrokerTest extends KafkaMesosTestCase {
     broker.bindAddress = new Util.BindAddress("192.168.0.1")
     broker.syslog = true
 
-    broker.constraints = parseMap("a=like:1").mapValues(new Constraint(_))
-    broker.options = parseMap("a=1")
-    broker.log4jOptions = parseMap("b=2")
-    broker.jvmOptions = "-Xms512m"
-
+    broker.constraints = parseMap("a=like:1").mapValues(new Constraint(_)).toMap
+    broker.options = parseMap("a=1").toMap
+    broker.log4jOptions = parseMap("b=2").toMap
     broker.failover.registerFailure(new Date())
-    broker.task = new Task("1", "slave", "executor", "host")
+    broker.task = Task("1", "slave", "executor", "host")
 
-    val read: Broker = new Broker()
-    read.fromJson(Util.parseJson("" + broker.toJson()))
+    broker.executionOptions = ExecutionOptions(
+      container = Some(Container(
+        ctype = ContainerType.Docker,
+        name = "test",
+        mounts = Seq(Mount("/a", "/b", MountMode.ReadWrite))
+      )),
+      javaCmd = "/usr/bin/java",
+      jvmOptions = "-Xms512m"
+    )
+
+    val read = JsonUtil.fromJson[Broker](JsonUtil.toJson(broker))
 
     BrokerTest.assertBrokerEquals(broker, read)
   }
@@ -409,8 +475,8 @@ class BrokerTest extends KafkaMesosTestCase {
   // static part
   @Test
   def idFromTaskId {
-    assertEquals("0", Broker.idFromTaskId(Broker.nextTaskId(new Broker("0"))))
-    assertEquals("100", Broker.idFromTaskId(Broker.nextTaskId(new Broker("100"))))
+    assertEquals(0, Broker.idFromTaskId(Broker.nextTaskId(new Broker(0))))
+    assertEquals(100, Broker.idFromTaskId(Broker.nextTaskId(new Broker(100))))
   }
 
   // Reservation
@@ -431,16 +497,27 @@ class BrokerTest extends KafkaMesosTestCase {
 
   // Stickiness
   @Test
-  def Stickiness_allowsHostname {
+  def Stickiness_matchesHostname {
     val stickiness = new Stickiness()
-    assertTrue(stickiness.allowsHostname("host0", new Date(0)))
-    assertTrue(stickiness.allowsHostname("host1", new Date(0)))
+    assertTrue(stickiness.matchesHostname("host0"))
+    assertTrue(stickiness.matchesHostname("host1"))
 
     stickiness.registerStart("host0")
     stickiness.registerStop(new Date(0))
-    assertTrue(stickiness.allowsHostname("host0", new Date(0)))
-    assertFalse(stickiness.allowsHostname("host1", new Date(0)))
-    assertTrue(stickiness.allowsHostname("host1", new Date(stickiness.period.ms)))
+    assertTrue(stickiness.matchesHostname("host0"))
+    assertFalse(stickiness.matchesHostname("host1"))
+  }
+
+  @Test
+  def Stickiness_sickyPeriod: Unit = {
+    val stickiness = new Stickiness()
+    assertEquals(stickiness.stickyTimeLeft(), 0)
+
+    stickiness.registerStart("host0")
+    stickiness.registerStop(new Date(0))
+    val stickyTimeSec = (stickiness.period.ms() / 1000).toInt
+    assertEquals(stickiness.stickyTimeLeft(new Date(0)), stickyTimeSec)
+    assertEquals(stickiness.stickyTimeLeft(new Date(stickyTimeSec * 1000)), 0)
   }
 
   @Test
@@ -468,12 +545,17 @@ class BrokerTest extends KafkaMesosTestCase {
     stickiness.registerStart("localhost")
     stickiness.registerStop(new Date(0))
 
-    val read: Stickiness = new Stickiness()
-    read.fromJson(Util.parseJson("" + stickiness.toJson))
-
+    val read = JsonUtil.fromJson[Stickiness](JsonUtil.toJson(stickiness))
     BrokerTest.assertStickinessEquals(stickiness, read)
   }
 
+  @Test
+  def Stickiness_default_if_empty: Unit = {
+    val json = "{\"id\": \"5\"}"
+    val broker = JsonUtil.fromJson[Broker](json)
+    assertNotNull(broker.stickiness)
+    assertEquals(new Stickiness(), broker.stickiness)
+  }
 
   // Failover
   @Test
@@ -585,21 +667,18 @@ class BrokerTest extends KafkaMesosTestCase {
     failover.resetFailures()
     failover.registerFailure(new Date(0))
 
-    val read: Failover = new Failover()
-    read.fromJson(Util.parseJson("" + failover.toJson))
-
+    val read = JsonUtil.fromJson[Failover](JsonUtil.toJson(failover))
     BrokerTest.assertFailoverEquals(failover, read)
   }
 
   // Task
   @Test
   def Task_toJson_fromJson {
-    val task = new Task("id", "slave", "executor", "host", parseMap("a=1,b=2"), State.RUNNING)
+    val task = Task("id", "slave", "executor", "host", parseMap("a=1,b=2").toMap)
+    task.state = State.RUNNING
     task.endpoint = new Endpoint("localhost:9092")
 
-    val read: Task = new Task()
-    read.fromJson(Util.parseJson("" + task.toJson))
-
+    val read = JsonUtil.fromJson[Task](JsonUtil.toJson(task))
     BrokerTest.assertTaskEquals(task, read)
   }
 }
@@ -622,12 +701,12 @@ object BrokerTest {
     assertEquals(expected.constraints, actual.constraints)
     assertEquals(expected.options, actual.options)
     assertEquals(expected.log4jOptions, actual.log4jOptions)
-    assertEquals(expected.jvmOptions, actual.jvmOptions)
 
     assertFailoverEquals(expected.failover, actual.failover)
     assertTaskEquals(expected.task, actual.task)
 
     assertEquals(expected.needsRestart, actual.needsRestart)
+    assertEquals(expected.executionOptions, actual.executionOptions)
   }
 
   def assertFailoverEquals(expected: Failover, actual: Failover) {
@@ -662,6 +741,9 @@ object BrokerTest {
 
     assertEquals(expected.state, actual.state)
   }
+
+  def assertAccept(expected: OfferResult): Unit =
+    assertTrue(expected.isInstanceOf[OfferResult.Accept])
 
   private def checkNulls(expected: Object, actual: Object): Boolean = {
     if (expected == actual) return true
